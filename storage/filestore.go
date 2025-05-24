@@ -8,14 +8,14 @@ import (
 	"sync"
 )
 
-const storageDir = "gosql_data"
+const storageDir = "data"
 
 type FileStore struct {
 	tables map[string]*Table
 	mu     sync.RWMutex
 }
 
-func NewFileStore() (*FileStore, error) {
+func NewFileStore(storageDir string) (*FileStore, error) {
 	fs := &FileStore{
 		tables: make(map[string]*Table),
 	}

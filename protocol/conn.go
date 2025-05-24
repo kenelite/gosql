@@ -1,56 +1,61 @@
 package protocol
 
 import (
-	"bytes"
+	"bufio"
 	"io"
+	"net"
 )
 
 type Conn struct {
-	Reader io.Reader
-	Writer io.Writer
-	Seq    uint8
+	netConn net.Conn
+	reader  *bufio.Reader
+	writer  *bufio.Writer
+	seq     uint8
 }
 
-// ReadPacket reads a full MySQL packet (4-byte header + payload)
-func (c *Conn) ReadPacket() ([]byte, error) {
-	header := make([]byte, 4)
-	if _, err := io.ReadFull(c.Reader, header); err != nil {
-		return nil, err
+func NewConn(nc net.Conn) *Conn {
+	return &Conn{
+		netConn: nc,
+		reader:  bufio.NewReader(nc),
+		writer:  bufio.NewWriter(nc),
+		seq:     0,
 	}
-
-	length := int(uint32(header[0]) | uint32(header[1])<<8 | uint32(header[2])<<16)
-	c.Seq = header[3]
-
-	data := make([]byte, length)
-	if _, err := io.ReadFull(c.Reader, data); err != nil {
-		return nil, err
-	}
-	return data, nil
 }
 
-// WritePacket writes a MySQL packet
+func (c *Conn) ReadQuery() (string, error) {
+	data, err := c.readPacket()
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func (c *Conn) readPacket() ([]byte, error) {
+	head := make([]byte, 4)
+	if _, err := io.ReadFull(c.reader, head); err != nil {
+		return nil, err
+	}
+	length := int(head[0]) | int(head[1])<<8 | int(head[2])<<16
+	c.seq = head[3]
+	body := make([]byte, length)
+	if _, err := io.ReadFull(c.reader, body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
 func (c *Conn) WritePacket(data []byte) error {
 	length := len(data)
-	header := []byte{
-		byte(length),
-		byte(length >> 8),
-		byte(length >> 16),
-		c.Seq,
+	head := []byte{byte(length), byte(length >> 8), byte(length >> 16), c.seq}
+	c.seq++
+	packet := append(head, data...)
+	_, err := c.writer.Write(packet)
+	if err != nil {
+		return err
 	}
-	c.Seq++
-
-	packet := append(header, data...)
-	_, err := c.Writer.Write(packet)
-	return err
+	return c.writer.Flush()
 }
 
-// WriteEOF sends a MySQL EOF packet (used after column definitions and after rows)
-func (c *Conn) WriteEOF() error {
-	var buf bytes.Buffer
-	buf.WriteByte(0xfe) // EOF packet header
-	buf.WriteByte(0x00) // warnings (lower byte)
-	buf.WriteByte(0x00) // warnings (upper byte)
-	buf.WriteByte(0x00) // status flags (lower byte)
-	buf.WriteByte(0x00) // status flags (upper byte)
-	return c.WritePacket(buf.Bytes())
+func (c *Conn) Close() {
+	c.netConn.Close()
 }
