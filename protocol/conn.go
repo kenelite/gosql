@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"io"
 )
 
@@ -41,4 +42,15 @@ func (c *Conn) WritePacket(data []byte) error {
 	packet := append(header, data...)
 	_, err := c.Writer.Write(packet)
 	return err
+}
+
+// WriteEOF sends a MySQL EOF packet (used after column definitions and after rows)
+func (c *Conn) WriteEOF() error {
+	var buf bytes.Buffer
+	buf.WriteByte(0xfe) // EOF packet header
+	buf.WriteByte(0x00) // warnings (lower byte)
+	buf.WriteByte(0x00) // warnings (upper byte)
+	buf.WriteByte(0x00) // status flags (lower byte)
+	buf.WriteByte(0x00) // status flags (upper byte)
+	return c.WritePacket(buf.Bytes())
 }
