@@ -2,46 +2,96 @@ package protocol
 
 import (
 	"bytes"
-	"crypto/rand"
+	"crypto/sha1"
+	"encoding/binary"
+	"math/rand"
 )
 
-const (
-	protocolVersion = 10
-	serverVersion   = "5.7.0-gosql"
-)
+var serverVersion = "5.7.0-gosql"
 
-func (c *Conn) WriteHandshake() error {
-	buf := &bytes.Buffer{}
-	buf.WriteByte(protocolVersion)
+func (c *Conn) Handshake(users map[string]string) error {
+	// 1. Send handshake initialization
+	authPluginData := make([]byte, 20)
+	rand.Read(authPluginData)
+
+	var buf bytes.Buffer
+	buf.WriteByte(0x0a) // protocol version
 	buf.WriteString(serverVersion)
-	buf.WriteByte(0x00) // Null-terminated
+	buf.WriteByte(0x00)                                     // null terminator
+	binary.Write(&buf, binary.LittleEndian, uint32(1))      // connection ID
+	buf.Write(authPluginData[:8])                           // auth-plugin-data-part-1
+	buf.WriteByte(0x00)                                     // filler
+	binary.Write(&buf, binary.LittleEndian, uint16(0x0002)) // capability flags (lower 2 bytes)
+	buf.WriteByte(0x21)                                     // character set
+	binary.Write(&buf, binary.LittleEndian, uint16(0))      // status flags
+	binary.Write(&buf, binary.LittleEndian, uint16(0x8000)) // capability flags (upper 2 bytes)
+	buf.WriteByte(20)                                       // length of auth-plugin-data
+	buf.Write(make([]byte, 10))                             // reserved
+	buf.Write(authPluginData[8:])                           // auth-plugin-data-part-2
+	buf.WriteByte(0x00)                                     // null terminator for plugin name
 
-	// Connection ID
-	buf.Write([]byte{1, 0, 0, 0})
+	if err := c.WritePacket(buf.Bytes()); err != nil {
+		return err
+	}
 
-	// Auth plugin data part 1
-	salt := make([]byte, 8)
-	rand.Read(salt)
-	buf.Write(salt)
-	buf.WriteByte(0x00)
+	// 2. Read login request
+	data, err := c.ReadPacket()
+	if err != nil {
+		return err
+	}
 
-	// Capability flags (lower 2 bytes)
-	buf.Write([]byte{0xff, 0xf7}) // CLIENT_PROTOCOL_41, CLIENT_SECURE_CONN
-	buf.WriteByte(0x21)           // Charset: utf8
-	buf.Write([]byte{0x00, 0x00}) // Status flags
-	buf.Write([]byte{0xff, 0xff}) // Capability flags (upper 2 bytes)
-	buf.WriteByte(21)             // Auth plugin length
-	buf.Write(make([]byte, 10))   // Reserved
+	username, clientAuth := parseLogin(data, authPluginData)
+	storedPass, ok := users[username]
+	if !ok || !checkPassword(storedPass, authPluginData, clientAuth) {
+		return c.WriteError(1045, "Access denied for user")
+	}
 
-	// Auth plugin data part 2
-	salt2 := make([]byte, 12)
-	rand.Read(salt2)
-	buf.Write(salt2)
-	buf.WriteByte(0x00)
+	// 3. Send OK packet
+	return c.WriteOK()
+}
 
-	// Auth plugin name
-	buf.WriteString("mysql_native_password")
-	buf.WriteByte(0x00)
+func parseLogin(data, seed []byte) (string, []byte) {
+	pos := 36
+	end := bytes.IndexByte(data[pos:], 0x00)
+	if end == -1 {
+		return "", nil
+	}
+	username := string(data[pos : pos+end])
+	pos += end + 1
 
-	return c.WritePacket(buf.Bytes())
+	if pos >= len(data) {
+		return username, nil
+	}
+	authLen := int(data[pos])
+	pos++
+	if pos+authLen > len(data) {
+		return username, nil
+	}
+	authResp := data[pos : pos+authLen]
+
+	return username, authResp
+}
+
+func checkPassword(password string, seed, authResp []byte) bool {
+	if password == "" {
+		return len(authResp) == 0
+	}
+
+	shaPass := sha1.Sum([]byte(password))
+	shaShaPass := sha1.Sum(shaPass[:])
+
+	h := sha1.New()
+	h.Write(seed[:20])
+	h.Write(shaShaPass[:])
+	hash := h.Sum(nil)
+
+	if len(hash) != len(authResp) {
+		return false
+	}
+
+	for i := range hash {
+		hash[i] ^= authResp[i]
+	}
+
+	return bytes.Equal(hash, shaPass[:])
 }
