@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"bufio"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 )
@@ -23,14 +25,26 @@ func NewConn(nc net.Conn) *Conn {
 }
 
 func (c *Conn) ReadQuery() (string, error) {
-	data, err := c.readPacket()
+	data, err := c.ReadPacket()
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+
+	if len(data) == 0 {
+		return "", errors.New("empty packet")
+	}
+
+	switch data[0] {
+	case 0x01: // COM_QUIT
+		return "", ErrQuit
+	case 0x03: // COM_QUERY
+		return string(data[1:]), nil
+	default:
+		return "", fmt.Errorf("unsupported command: 0x%x", data[0])
+	}
 }
 
-func (c *Conn) readPacket() ([]byte, error) {
+func (c *Conn) ReadPacket() ([]byte, error) {
 	head := make([]byte, 4)
 	if _, err := io.ReadFull(c.reader, head); err != nil {
 		return nil, err
