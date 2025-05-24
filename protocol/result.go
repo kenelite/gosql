@@ -3,9 +3,10 @@ package protocol
 import (
 	"bytes"
 	"fmt"
+	"github.com/kenelite/gosql/storage"
 )
 
-func (c *Conn) WriteResultSet(columns []string, rows [][]interface{}) error {
+func (c *Conn) WriteResultSet(columns []string, rows []storage.Row) error {
 	var err error
 
 	// Send column count as a LengthEncodedInteger
